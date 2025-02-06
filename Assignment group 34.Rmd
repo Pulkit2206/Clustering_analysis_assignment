@@ -1,0 +1,663 @@
+---
+title: "Assignment1"
+author: "Pom"
+date: "2023-11-10"
+output:
+  pdf_document: default
+  html_document: default
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#install.packages("FSelector")
+#install.packages('rJava', type='source')
+library(FSelector)
+#install.packages("ggplot2")
+library(ggplot2)
+#install.packages("caret")
+library(caret)
+#install.packages("tidyverse")
+library(tidyverse)
+#install.packages("mltools")
+library(mltools)
+library(data.table)
+# Load ROSE package for data balancing
+library(ROSE) 
+
+```
+## 1. Business Understanding
+
+### Define the problem
+# Clearly define the problem and objectives.
+
+## 2. Data Understanding
+
+### Load the dataset
+
+
+```{r}
+leads_data=read.csv("assignment_data.csv",stringsAsFactors = TRUE)
+```
+
+# Read the data and perform initial data exploration.
+
+## 3. Data Preparation
+
+```{r}
+str(leads_data)
+
+# Change some column to Factor 
+names <- c('Dependent','Marital_Status','Registration','Target')
+leads_data[,names] <- lapply(leads_data[,names],factor)
+```
+### Data Cleaning
+# Address missing values, outliers, and inconsistencies.
+```{r}
+#  Check the levels of Factors Variables 
+levels(leads_data$Marital_Status)
+levels(leads_data$Registration)
+levels(leads_data$Target)
+levels(leads_data$Gender)
+levels(leads_data$Region_Code)
+levels(leads_data$Occupation)
+levels(leads_data$Credit_Product)
+levels(leads_data$Active)
+
+levels(leads_data$Dependent)
+# -1 should be removed 
+# Find the indices of rows with (-1) value
+ 
+index_minus <- which(leads_data$Dependent == "-1")
+leads_data$Dependent <- droplevels(leads_data$Dependent, exclude = leads_data$Dependent[index_minus])
+
+```
+```{r}
+levels(leads_data$Account_Type)
+# There is a gap of space the indicate a bank level 
+# Find the indices of rows with blank value
+# is blank level means something???
+index_blank <- which(leads_data$Account_Type == "  ")
+leads_data$Account_Type <- droplevels(leads_data$Account_Type)
+
+```
+
+```{r}
+levels(leads_data$Channel_Code) # x1 , x2 , x3 , x4 
+  # Channel_Code: acquisition channel code used to reach the customer when they opened their bank account.
+  # Should modify the channel code level 
+  # Readme.txt document is the sole source of information provided by the company. If you could not find any information about this, you may assume they may want to keep it confidential.  You can definitely make assumptions about the unclear parts. However, it's crucial that you clearly articulate and document your assumptions.
+
+  # We can assume that x1 : Call Center , x2 : Live Chat , x3 : Email and x4 : Social Media 
+```
+
+```{r}
+# Check Missing Values 
+summarise_all(leads_data, ~ sum(is.na(.x)))  
+
+# Exclude Missing Values 
+leads_data <- filter(leads_data, !is.na(Credit_Product))
+leads_data <- filter(leads_data, !is.na(Dependent))
+  
+# Check if Missing values filtered successfully
+sum(is.na(leads_data)) # sum is zero 
+  
+```
+```{r}
+# Remove ID Varibale (Redundant)
+leads_data$ID <- NULL 
+
+
+str(leads_data)
+summary(leads_data)
+
+```
+```{r}
+library(plyr)
+Region_groupby <- count(leads_data, "Region_Code")
+Region_groupby <- Region_groupby[order(-Region_groupby$freq),]
+top_region <- Region_groupby$Region_Code[1:2]
+
+leads_data <- leads_data %>% mutate(Region_Code = as.factor(case_when(
+  Region_Code %in% top_region[1] ~ "high",
+  Region_Code %in% top_region[2] ~ "medium",
+  TRUE ~ "low"
+))) 
+
+str(leads_data)
+
+```
+
+```{r}
+# check outlier ***
+# boxplot(leads_data$Age)
+# 
+# boxplot(leads_data$Vintage)
+# outliers <- which(leads_data$Vintage >= 120)  
+# 
+# # Print data records with outliers 
+# print(leads_data[outliers,])
+# leads_data <- leads_data[-outliers,] 
+# 
+# boxplot(leads_data$Avg_Account_Balance)
+# outliers <- which(leads_data$Avg_Account_Balance >= 2000000 )  
+# leads_data <- leads_data[-outliers,] 
+
+
+```
+
+
+### Data Encoding
+# Encode categorical variables and scale numerical features if necessary.
+```{r}
+
+# Apply label encoding to Gender
+# Here, 1 represents the Male, and 2 represents the Female.
+leads_data$Gender <- ifelse(leads_data$Gender == "Male", 1, 2)
+# Apply encoding to update the Credit_Product column
+# Here, 1 represents customer has active product, and 0 represents no active product.
+leads_data$Credit_Product <- ifelse(leads_data$Credit_Product == "Yes", 1, 0)
+# Apply encoding to update the Active column
+# Here, 1 represents customer has been active the last 3 months , and 0 represents no active.
+leads_data$Active <- ifelse(leads_data$Active == "Yes", 1, 0)
+
+# Apply label encoding to Channel Code 
+# We can assume that 1 : Call Center , 2 : Live Chat , 3 : Email and 4 : Social Media
+leads_data$Channel_Code <- recode(leads_data$Channel_Code, "X1" = 1, "X2" = 2, "X3" = 3, "X4" = 4)
+# Apply label encoding to Account Type 
+# Here 1 : Gold , 2 : Silver , 3 : Platinum 
+leads_data$Account_Type <- recode(leads_data$Account_Type, "Gold" = 1, "Silver" = 2, "Platinum" = 3)
+# Apply one hot encoding to occupation
+leads_data <- one_hot(as.data.table(leads_data), cols = "Occupation")
+#encoded_gender <- model.matrix(~gender-1, data=df)
+# Apply encoding to Region Code : 
+# Target Encoding : the process of replacing a categorical value with the mean of the target variable. Any non-categorical columns are automatically dropped by the target encoder model. Note: You can also use target encoding to convert categorical columns to numeric.
+# Pros : Alternatively, Target Encoding (or mean encoding) [15] works as an effective solution to overcome the issue of high cardinality.
+# Drawbacks : The main drawbacks of this method are its dependency to the distribution of the target, and its lower predictability power compare to the binary encoding method.
+# Target encodings create a special risk of overfitting, which means they need to be trained on an independent "encoding" split. When you join the encoding to future splits, Pandas will fill in missing values for any categories not present in the encoding split. These missing values you would have to impute somehow
+
+str(leads_data)
+summary(leads_data)
+
+```
+
+### Split the data For SVM
+# Divide the dataset into training and testing subsets.
+```{r}
+set.seed(123)
+
+# sample for SVM
+svm_samples <- sample_frac(leads_data, 0.1) 
+
+
+# Split Training data for SVM since it takes long time to run , but the test data will use the same
+index_svm = createDataPartition(svm_samples$Target, p = 0.7, list = FALSE)
+
+# take sample from whole data set first and split to train and test later.
+training_SVM = svm_samples[index_svm,]
+test_SVM = svm_samples[-index_svm, ]
+
+prop.table(table(svm_samples$Target))
+prop.table(table(training_SVM$Target))
+prop.table(table(test_SVM$Target))
+```
+###DATA BALANCING - perform for training set
+```{r}
+
+oversampled <- ovun.sample(Target ~. , data = training_SVM, method = "over", p=0.4, seed=1)$data
+table(training_SVM$Target)
+table(oversampled$Target)
+
+bothsampled <- ovun.sample(Target ~., data = training_SVM, method = "both", p=0.4, seed=1)$data
+table(bothsampled$Target)
+
+# undersampling
+undersampled <- ovun.sample(Target ~., data = training_SVM, method = "under", p=0.4, seed=1)$data
+table(undersampled$Target)
+
+# ROSE
+rose <- ROSE(Target ~. , data = training_SVM, p=0.5, seed=1)$data
+
+
+#SMOTE
+#install.packages("performanceEstimation")
+library(performanceEstimation)
+lsf.str("package:performanceEstimation")
+smote <- smote(Target ~. , data = training_SVM,perc.over =5, k = 5)
+table(smote$Target)
+table(training_SVM$Target)
+
+# Pick up 
+training_SVM <- smote
+
+```
+
+### Feature Engineering
+# Create new features or transform existing ones.
+```{r}
+# Use function information.gain to compute information gain values of the attributes
+weights <- information.gain(Target~., svm_samples)
+print(weights)
+```
+
+```{r}
+# plot the weights in descending order.
+weights$attr  <- rownames(weights)
+weights <- arrange(weights, -attr_importance)
+barplot(weights$attr_importance, names = weights$attr, las = 2, ylim = c(0, 0.06))
+```
+
+```{r}
+#  Use cutoff.biggest.diff() 
+cutoff.biggest.diff(weights)
+```
+# Registration Plot 
+```{r}
+ggplot(training_SVM, 
+      aes(x = Target, group = Registration)) + 
+      geom_bar(aes(y = after_stat(prop), fill = factor(after_stat(x))), 
+                   stat="count", 
+                   alpha = 0.7) +
+      geom_text(aes(label = scales::percent(after_stat(prop)), y = after_stat(prop) ), 
+                   stat= "count", 
+                   vjust = -.1) +
+      labs(y = "Percentage") +
+      facet_grid(~Registration) +
+      scale_fill_manual("Target" ,values = c("steelblue","orange"), labels=c("No", "Yes")) + 
+      theme(plot.title = element_text(hjust = 0.5)) + 
+      ggtitle("Registration")
+```
+
+# Credit Product Plot 
+```{r}
+# Use barplot function to plot Target vs Credit Product
+barplotdata = prop.table(table(training_SVM$Target, training_SVM$Credit_Product), margin = 2)
+barplot(barplotdata, main = "Target vs Credit Product",
+        xlab="Credit Product",col=c("steelblue","orange"),
+        legend=rownames(barplotdata), cex.names = 0.70, beside = TRUE)
+```
+# Target VS Vintage 
+```{r}
+# Plot Target vs Vintage
+ggplot(training_SVM, aes(x = Vintage)) + 
+  geom_histogram(aes(color = Target, fill = Target), alpha = 0.7, position = "identity")+
+  scale_color_manual(values=c("#386cb0","black"))+
+  scale_fill_manual(values=c("#386cb0","#fdb315"))+
+  theme_classic()
+```
+
+
+```{r}
+# 1. select all column >0
+features <- filter(weights, attr_importance > 0)$attr
+
+# 2. select top 5
+#features <- top_n(weights,5,attr_importance)$attr
+
+```
+
+```{r}
+# 3. Correlation
+# Look at correlations between numeric features
+num <- sapply(training, FUN = is.numeric)  # identify numeric columns
+(corx <- cor(training[, num], use = "pairwise.complete.obs"))  # simple correlation matrix
+
+# Visualize correlations; can be useful if you have a lot of features
+install.packages("corrplot")
+library(corrplot)
+corrplot::corrplot(corx, method = "square", order = "FPC", type = "lower", diag = TRUE)
+```
+
+```{r}
+# What about categorical features?
+xtabs(~ Dependent + Marital_Status + Region_Code + Registration, data = training)  # perfect correlation?
+summary(lr.fit.all <- glm(Target ~ ., family = binomial(link = "logit"), data = training))
+
+#install.packages("vip")
+library(vip)
+vip::vi(lr.fit.all) 
+```
+
+```{r}
+#4. F-score
+#generate F-scores (Fisher scores) for ranking features
+fscore(training,classCol = 1,featureCol = c(2,12,22,32,42,52,62,72,82,92,102,112))
+```
+
+
+```{r}
+# For SVM
+class(training_SVM)
+
+training_SVM <- as.data.frame(training_SVM)
+modelling_data_SVM <- training_SVM[features]
+training_SVM <- modelling_data_SVM %>% mutate(Target = training_SVM$Target )
+```
+
+
+## 4. Modeling For SVM
+```{r}
+# SVM
+# Load package e1071
+library(e1071)
+
+# Build an SVM model by using svm() function
+svm_model  <- svm(Target~. , data = training_SVM, kernel = "radial", scale = TRUE, probability = TRUE)
+
+# Print svm_model
+print(svm_model)
+
+# Predict the Test set results 
+ svm_predict = predict(svm_model, test_SVM)
+
+# Use confusionMatrix to print the performance of SVM model
+confusionMatrix(svm_predict, test_SVM$Target, positive='1', mode = "prec_recall")
+
+# No over sampling + No Outlier remove
+# Confusion Matrix and Statistics
+# 
+#           Reference
+# Prediction    0    1
+#          0 3585  193
+#          1   68  186
+#                                           
+#                Accuracy : 0.9353          
+#                  95% CI : (0.9272, 0.9427)
+#     No Information Rate : 0.906           
+#     P-Value [Acc > NIR] : 1.241e-11       
+#                                           
+#                   Kappa : 0.554           
+#                                           
+#  Mcnemar's Test P-Value : 1.649e-14       
+#                                           
+#               Precision : 0.73228         
+#                  Recall : 0.49077         
+#                      F1 : 0.58768         
+#              Prevalence : 0.09400         
+#          Detection Rate : 0.04613         
+#    Detection Prevalence : 0.06300         
+#       Balanced Accuracy : 0.73608         
+#                                           
+#        'Positive' Class : 1    
+
+# Over sampling +  Outlier remove
+# Confusion Matrix and Statistics
+# 
+#           Reference
+# Prediction     0     1
+#          0 21809   685
+#          1  2582  1706
+#                                          
+#                Accuracy : 0.878          
+#                  95% CI : (0.874, 0.8819)
+#     No Information Rate : 0.9107         
+#     P-Value [Acc > NIR] : 1              
+#                                          
+#                   Kappa : 0.4475         
+#                                          
+#  Mcnemar's Test P-Value : <2e-16         
+#                                          
+#               Precision : 0.39785        
+#                  Recall : 0.71351        
+#                      F1 : 0.51085        
+#              Prevalence : 0.08928        
+#          Detection Rate : 0.06370        
+#    Detection Prevalence : 0.16011        
+#       Balanced Accuracy : 0.80383        
+#                                          
+#        'Positive' Class : 1     
+```
+
+```{r}
+# SVM with Prob
+svm_predict_prob <- predict(svm_model, test_SVM, probability = TRUE)
+
+prob_SVM <- attr(svm_predict_prob, "probabilities")
+
+# Use confusionMatrix to print the performance of SVM model
+confusionMatrix(svm_predict_prob, test_SVM$Target, positive = "1", mode = "prec_recall")
+
+# No over sampling + No Outlier remove
+# Confusion Matrix and Statistics
+# 
+#           Reference
+# Prediction    0    1
+#          0 3591  202
+#          1   62  177
+#                                          
+#                Accuracy : 0.9345         
+#                  95% CI : (0.9264, 0.942)
+#     No Information Rate : 0.906          
+#     P-Value [Acc > NIR] : 4.18e-11       
+#                                          
+#                   Kappa : 0.5393         
+#                                          
+#  Mcnemar's Test P-Value : < 2.2e-16      
+#                                          
+#               Precision : 0.74059        
+#                  Recall : 0.46702        
+#                      F1 : 0.57282        
+#              Prevalence : 0.09400        
+#          Detection Rate : 0.04390        
+#    Detection Prevalence : 0.05928        
+#       Balanced Accuracy : 0.72502        
+#                                          
+#        'Positive' Class : 1   
+
+# Over sampling +  Outlier remove
+# Confusion Matrix and Statistics
+# 
+#           Reference
+# Prediction     0     1
+#          0 21834   690
+#          1  2557  1701
+#                                           
+#                Accuracy : 0.8788          
+#                  95% CI : (0.8748, 0.8826)
+#     No Information Rate : 0.9107          
+#     P-Value [Acc > NIR] : 1               
+#                                           
+#                   Kappa : 0.4486          
+#                                           
+#  Mcnemar's Test P-Value : <2e-16          
+#                                           
+#               Precision : 0.39948         
+#                  Recall : 0.71142         
+#                      F1 : 0.51166         
+#              Prevalence : 0.08928         
+#          Detection Rate : 0.06351         
+#    Detection Prevalence : 0.15899         
+#       Balanced Accuracy : 0.80329         
+#                                           
+#        'Positive' Class : 1   
+```
+
+```{r}
+
+# tune() function uses random numbers. Therefore, set a seed as 1
+set.seed(1)
+
+# Find the best cost value among the list (0.1, 1, 10, 100, 1000) 
+tune_out = e1071::tune(svm, Target~., data = training_SVM, kernel= "radial", scale = TRUE, 
+                ranges = list(cost=c(0.1, 1, 10, 100, 1000)))
+
+# Save the best model as svm_best
+svm_best = tune_out$best.model
+
+# Predict the class of the test data 
+SVM_tunedpred <- predict(svm_best, test_SVM)
+
+# Use confusionMatrix to print the performance of SVM model
+confusionMatrix(SVM_tunedpred, test_SVM$Target, positive='1', mode = "prec_recall")
+
+
+
+ROC_SVM <- roc.curve(test_SVM$Target,svm_predict)
+auc(ROC_SVM)
+ROC_SVM_tuned <- roc.curve(test_SVM$Target,SVM_tunedpred)
+pROC::ggroc(list(SVM = ROC_SVM, SVM_tuned = ROC_SVM_tuned), legacy.axes=TRUE)+ xlab("FPR") + ylab("TPR") +
+   geom_abline(intercept = 0, slope = 1, color = "darkgrey", linetype = "dashed")
+```
+
+### Split the data For LOGISTIC regression
+# Divide the dataset into training and testing subsets.
+```{r}
+set.seed(123)
+
+# Split Training data for SVM since it takes long time to run , but the test data will use the same
+index = createDataPartition(leads_data$Target, p = 0.8, list = FALSE)
+
+# take sample from whole data set first and split to train and test later.
+training = leads_data[index,]
+test = leads_data[-index, ]
+
+prop.table(table(leads_data$Target))
+prop.table(table(training$Target))
+prop.table(table(test$Target))
+```
+
+###DATA BALANCING - perform for training set
+```{r}
+
+oversampled <- ovun.sample(Target ~. , data = training, method = "over", p=0.5, seed=1)$data
+table(training$Target)
+table(oversampled$Target)
+
+bothsampled <- ovun.sample(Target ~., data = training, method = "both", p=0.4, seed=1)$data
+table(bothsampled$Target)
+
+# undersampling
+undersampled <- ovun.sample(Target ~., data = training, method = "under", p=0.4, seed=1)$data
+table(undersampled$Target)
+
+
+
+# Pick up bothsampled
+training <- oversampled
+
+```
+
+### Feature Engineering
+# Create new features or transform existing ones.
+```{r}
+# Use function information.gain to compute information gain values of the attributes
+weights <- information.gain(Target~., leads_data)
+print(weights)
+```
+
+```{r}
+# plot the weights in descending order.
+weights$attr  <- rownames(weights)
+weights <- arrange(weights, -attr_importance)
+barplot(weights$attr_importance, names = weights$attr, las = 2, ylim = c(0, 0.06))
+```
+
+```{r}
+# 1. Select all feature that  >0
+features <- filter(weights, attr_importance > 0)$attr
+
+# 2. Select only top 5
+#features <- top_n(weights,5,attr_importance)$attr
+
+```
+
+
+```{r}
+# For Logistic model
+class(training)
+
+training <- as.data.frame(training)
+modelling_data <- training[features]
+training <- modelling_data %>% mutate(Target = training$Target )
+```
+
+
+
+```{r}
+# Logistic Regression
+
+# Build a logistic regression model assign it to LogReg
+LogReg <- glm(Target~. , training , family = "binomial")
+# Predict the class probabilities of the test data
+LogReg_pred <- predict(LogReg, test, type="response")
+
+# Check the levels of target variable
+levels(training$Target)
+# Predict the class  -> change from prob to class prediction
+LogReg_class <- ifelse(LogReg_pred > 0.5, 1, 0) # SET UP THRESHOLD **
+
+head(LogReg_class) 
+class(LogReg_class) # numeric format
+
+# Save the predictions as factor variables
+LogReg_class <- as.factor(LogReg_class)
+
+confusionMatrix(LogReg_class, test$Target, positive = "1", mode = "prec_recall")
+
+# Confusion Matrix and Statistics
+# 
+#           Reference
+# Prediction     0     1
+#          0 36064  2290
+#          1   547  1428
+#                                           
+#                Accuracy : 0.9297          
+#                  95% CI : (0.9271, 0.9321)
+#     No Information Rate : 0.9078          
+#     P-Value [Acc > NIR] : < 2.2e-16       
+#                                           
+#                   Kappa : 0.4676          
+#                                           
+#  Mcnemar's Test P-Value : < 2.2e-16       
+#                                           
+#               Precision : 0.72304         
+#                  Recall : 0.38408         
+#                      F1 : 0.50167         
+#              Prevalence : 0.09219         
+#          Detection Rate : 0.03541         
+#    Detection Prevalence : 0.04897         
+#       Balanced Accuracy : 0.68457         
+#                                           
+#        'Positive' Class : 1        
+
+
+# Over sampling +  Outlier remove
+# Confusion Matrix and Statistics
+# 
+#           Reference
+# Prediction     0     1
+#          0 29096   961
+#          1  3416  2236
+#                                          
+#                Accuracy : 0.8774         
+#                  95% CI : (0.874, 0.8808)
+#     No Information Rate : 0.9105         
+#     P-Value [Acc > NIR] : 1              
+#                                          
+#                   Kappa : 0.4415         
+#                                          
+#  Mcnemar's Test P-Value : <2e-16         
+#                                          
+#               Precision : 0.39561        
+#                  Recall : 0.69941        
+#                      F1 : 0.50537        
+#              Prevalence : 0.08953        
+#          Detection Rate : 0.06262        
+#    Detection Prevalence : 0.15828        
+#       Balanced Accuracy : 0.79717        
+#                                          
+#        'Positive' Class : 1              
+#                   
+```
+
+```{r}
+library(pROC)
+roc_obj <- roc(test$Target, ifelse(LogReg_pred > 0.5, 1, 0))
+auc <- auc(roc_obj)
+plot(roc_obj, main = paste("AUC =", round(auc, 2)))
+
+```
+
+
+
